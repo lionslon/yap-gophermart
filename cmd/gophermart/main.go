@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"github.com/lionslon/yap-gophermart/internal/config"
+	"github.com/lionslon/yap-gophermart/internal/database"
 	"github.com/lionslon/yap-gophermart/internal/server"
+	"go.uber.org/zap"
 	"log"
 	"net/http"
 	"os"
@@ -24,7 +26,6 @@ func main() {
 	if err := run(); err != nil {
 		log.Fatal(err)
 	}
-	log.Println("bye-bye")
 
 }
 
@@ -33,32 +34,33 @@ func run() (err error) {
 	ctx, cancelCtx := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancelCtx()
 
+	zl, err := zap.NewProduction()
+	if err != nil {
+		return fmt.Errorf("cannot init zap-logger err: %w ", err)
+	}
+
 	cfg := config.GetConfig()
-	// db, err := store.NewDB(ctx, cfg.DSN)
-	// if err != nil {
-	// 	return fmt.Errorf("failed to initialize a new DB: %w", err)
-	// }
+	log.Printf("config %+v", cfg)
+	db, err := database.NewDB(ctx, cfg.DSN)
+	if err != nil {
+		return fmt.Errorf("failed to initialize a new DB: %w", err)
+	}
 
 	wg := &sync.WaitGroup{}
 	defer func() {
 		wg.Wait()
 	}()
 
-	// wg.Add(1)
-	// go func() {
-	// 	defer log.Print("closed DB")
-	// 	defer wg.Done()
-	// 	<-ctx.Done()
-
-	// 	db.Close()
-	// }()
-
 	componentsErrs := make(chan error, 1)
 
-	h := server.NewHandlers()
-	srv := server.InitServer(h, cfg)
+	h, err := server.NewHandlers(cfg.Key, db, zl)
+	if err != nil {
+		log.Printf("handler init err: %v", err)
+	}
+
+	srv := server.InitServer(h, cfg, zl)
 	go func(errs chan<- error) {
-		if err := srv.ListenAndServe(); err != nil {
+		if err := srv.HttpServer.ListenAndServe(); err != nil {
 			if errors.Is(err, http.ErrServerClosed) {
 				return
 			}
@@ -74,7 +76,7 @@ func run() (err error) {
 
 		shutdownTimeoutCtx, cancelShutdownTimeoutCtx := context.WithTimeout(context.Background(), timeoutServerShutdown)
 		defer cancelShutdownTimeoutCtx()
-		if err := srv.Shutdown(shutdownTimeoutCtx); err != nil {
+		if err := srv.HttpServer.Shutdown(shutdownTimeoutCtx); err != nil {
 			log.Printf("an error occurred during server shutdown: %v", err)
 		}
 	}()

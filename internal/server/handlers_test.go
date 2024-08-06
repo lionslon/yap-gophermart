@@ -14,7 +14,7 @@ import (
 
 func TestRouter(t *testing.T) {
 
-	h := NewHandlers()
+	//h := NewHandlers()
 	r := initRouter(h)
 
 	testServer := httptest.NewServer(r)
