@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"github.com/lionslon/yap-gophermart/internal/config"
 	"net/http"
 
@@ -10,14 +11,13 @@ import (
 )
 
 type Server struct {
-	HttpServer *http.Server
-	Log        *zap.Logger
+	HTTPServer *http.Server
+	Log        *zap.SugaredLogger
 }
 
-func InitServer(h *Handlers, cfg *config.Config, log *zap.Logger) *Server {
-
+func InitServer(h *Handlers, cfg *config.Config, log *zap.SugaredLogger) *Server {
 	return &Server{
-		HttpServer: &http.Server{
+		HTTPServer: &http.Server{
 			Addr:    cfg.Address,
 			Handler: initRouter(h),
 		},
@@ -26,13 +26,11 @@ func InitServer(h *Handlers, cfg *config.Config, log *zap.Logger) *Server {
 }
 
 func initRouter(h *Handlers) *chi.Mux {
-
 	router := chi.NewRouter()
 	router.Use(middleware.Recoverer)
 	router.Use(h.RequestLogger)
 
 	router.Route("/api/user", func(r chi.Router) {
-
 		r.Post("/register", func(w http.ResponseWriter, r *http.Request) {
 			h.Register(r.Context(), w, r)
 		})
@@ -42,7 +40,6 @@ func initRouter(h *Handlers) *chi.Mux {
 		})
 
 		r.Group(func(r chi.Router) {
-
 			r.Use(h.JwtMiddleware)
 
 			r.Post("/orders", func(w http.ResponseWriter, r *http.Request) {
@@ -66,7 +63,9 @@ func initRouter(h *Handlers) *chi.Mux {
 			})
 		})
 	})
-
 	return router
+}
 
+func (s *Server) RunOrderAccruals(ctx context.Context) error {
+	return nil
 }

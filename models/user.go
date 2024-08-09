@@ -12,7 +12,7 @@ type UserDTO struct {
 }
 
 type User struct {
-	Id             string `json:"uuid"`
+	ID             string `json:"uuid"`
 	Login          string `json:"login"`
 	PasswordBase64 string `json:"password"`
 }

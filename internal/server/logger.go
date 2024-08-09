@@ -2,8 +2,6 @@ package server
 
 import (
 	"bytes"
-	"fmt"
-	"go.uber.org/zap"
 	"io"
 	"net/http"
 	"time"
@@ -11,7 +9,6 @@ import (
 
 func (h *Handlers) RequestLogger(hr http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-
 		rw := NewResponseLoggerWriter(w)
 
 		var buf bytes.Buffer
@@ -20,7 +17,7 @@ func (h *Handlers) RequestLogger(hr http.Handler) http.Handler {
 		body, err := io.ReadAll(tee)
 		if err != nil {
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
-			h.log.Error("request logger read body ", zap.Error(err))
+			h.log.Errorf("request logger read body err: %w", err)
 			return
 		}
 		r.Body = io.NopCloser(&buf)
@@ -29,17 +26,9 @@ func (h *Handlers) RequestLogger(hr http.Handler) http.Handler {
 		hr.ServeHTTP(rw, r)
 		duration := time.Since(start)
 
-		h.log.Info(
-			"HTTP request",
-			zap.String("method", r.Method),
-			zap.String("headers", fmt.Sprintf("%+v", r.Header)),
-			zap.String("body", string(body)),
-			zap.String("url", r.RequestURI),
-			zap.Duration("duration", duration),
-			zap.Int("status", rw.responseData.status),
-			zap.Int("size", rw.responseData.size),
+		h.log.Infof("HTTP request method: %s, header: %v, body: %s, url: %s, duration: %s, statusCode: %d, responseSize: %d",
+			r.Method, r.Header, string(body), r.RequestURI, duration, rw.responseData.status, rw.responseData.size,
 		)
-
 	})
 }
 
@@ -61,7 +50,6 @@ func NewResponseLoggerWriter(w http.ResponseWriter) *ResponseLoggerWriter {
 }
 
 func (r *ResponseLoggerWriter) Write(b []byte) (int, error) {
-
 	size, err := r.ResponseWriter.Write(b)
 	if err != nil {
 		return 0, err
@@ -70,12 +58,9 @@ func (r *ResponseLoggerWriter) Write(b []byte) (int, error) {
 	r.responseData.size += size
 
 	return size, nil
-
 }
 
 func (r *ResponseLoggerWriter) WriteHeader(statusCode int) {
-
 	r.ResponseWriter.WriteHeader(statusCode)
 	r.responseData.status = statusCode
-
 }

@@ -79,7 +79,7 @@ func run() (err error) {
 	}()
 
 	// Init Handlers
-	h, err := server.NewHandlers(cfg.Key, db)
+	h, err := server.NewHandlers(cfg.Key, db, log)
 	if err != nil {
 		return fmt.Errorf("failed to initialize handlers err: %w", err)
 	}
