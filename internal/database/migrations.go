@@ -23,7 +23,15 @@ func runMigrations(dsn string) error {
 		return fmt.Errorf("failed to get a new migrate instance: %w", err)
 	}
 
-	defer m.Close()
+	defer func() {
+		errS, errDB := m.Close()
+		if errS != nil {
+			err = errors.Join(err, fmt.Errorf("failed to close source: %w", errS))
+		}
+		if errDB != nil {
+			err = errors.Join(err, fmt.Errorf("failed to close DB: %w", errS))
+		}
+	}()
 
 	if err := m.Up(); err != nil {
 		if !errors.Is(err, migrate.ErrNoChange) {

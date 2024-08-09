@@ -26,3 +26,7 @@ func NewDB(ctx context.Context, dsn string) (*DB, error) {
 	}, nil
 
 }
+
+func (db *DB) Close() {
+	db.pool.Close()
+}
