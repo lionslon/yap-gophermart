@@ -64,11 +64,11 @@ func initRouter(h *Handlers) *chi.Mux {
 			})
 
 			r.Post("/balance/withdraw", func(w http.ResponseWriter, r *http.Request) {
-				h.AddBalanceWithdraw(r.Context(), w, r)
+				h.AddBalanceWithdrawn(r.Context(), w, r)
 			})
 
 			r.Get("/withdrawals", func(w http.ResponseWriter, r *http.Request) {
-				h.GetWithdrawals(r.Context(), w, r)
+				h.GetBalanceMovementHistory(r.Context(), w, r)
 			})
 		})
 	})

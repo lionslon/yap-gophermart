@@ -137,9 +137,53 @@ func (db *DB) UpdateOrder(ctx context.Context, order *models.Order) error {
 		return fmt.Errorf("db UpdateOrder err: %w", err)
 	}
 
+	if _, err := db.UpdateUserBalance(ctx, tx, order.UserID, order.Accrual); err != nil {
+		if errors.Is(err, models.ErrNotEnoughAccruals) {
+			if err := tx.Rollback(ctx); err != nil {
+				return fmt.Errorf("failed rollback transaction UpdateOrder err: %w", err)
+			}
+		}
+		return fmt.Errorf("failed update user balance. UpdateUserBalance err: %w", err)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("failed commit transaction UpdateOrder err: %w", err)
 	}
 
 	return nil
+}
+
+func (db *DB) GetUploadedOrders(ctx context.Context, u *models.User) ([]*models.Order, error) {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("unable to start GetUploadedOrders transaction err: %w", err)
+	}
+
+	defer tx.Rollback(ctx)
+
+	sql := `
+	SELECT id, uploaded, number, sum, status
+	FROM orders
+	WHERE userId = $1
+	ORDER BY uploaded DESC;`
+
+	rows, err := tx.Query(ctx, sql, u.ID)
+	if err != nil {
+		return nil, fmt.Errorf("db GetUploadedOrders err: %w", err)
+	}
+
+	var ors []*models.Order
+	for rows.Next() {
+		var o models.Order
+		if err := rows.Scan(&o.ID, &o.UploadedAt, &o.Number, &o.Accrual, &o.Status); err != nil {
+			return nil, fmt.Errorf("db GetUploadedOrders row scan err: %w", err)
+		}
+		ors = append(ors, &o)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("failed commit transaction GetUploadedOrders err: %w", err)
+	}
+
+	return ors, nil
 }

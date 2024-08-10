@@ -6,11 +6,6 @@ import (
 	"time"
 )
 
-type OrderDTO struct {
-	UserID string `json:"userId"`
-	Number string `json:"number"`
-}
-
 // Заказ загружен в систему, но не попал в обработку;
 const OrderStatusNew = "NEW"
 
@@ -22,6 +17,11 @@ const OrderStatusInvalid = "INVALID"
 
 // Данные по заказу проверены и информация о расчёте успешно получена.
 const OrderStatusProcessed = "PROCESSED"
+
+type OrderDTO struct {
+	UserID string `json:"userId"`
+	Number string `json:"number"`
+}
 
 type Order struct {
 	UploadedAt time.Time `json:"uploaded_at"`
@@ -37,6 +37,7 @@ type OrderStorage interface {
 	GetOrder(ctx context.Context, order *OrderDTO) (*Order, error)
 	GetOrdersForAccrual(ctx context.Context) ([]*Order, error)
 	UpdateOrder(ctx context.Context, order *Order) error
+	AddWithdrawn(ctx context.Context, userID string, orderNumber string, sum float64) error
 }
 
 type AccrualService interface {
