@@ -53,8 +53,8 @@ func (u *UserDTO) GetUser(ctx context.Context, db UserStorage) (*User, error) {
 	return db.GetUser(ctx, u)
 }
 
-func (o *User) GetUploadedOrders(ctx context.Context, db UserStorage) ([]*Order, error) {
-	return db.GetUploadedOrders(ctx, o)
+func (u *User) GetUploadedOrders(ctx context.Context, db UserStorage) ([]*Order, error) {
+	return db.GetUploadedOrders(ctx, u)
 }
 
 func (u *User) GetUserBalance(ctx context.Context, db UserStorage) (float64, error) {
