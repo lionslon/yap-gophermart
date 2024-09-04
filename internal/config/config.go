@@ -18,8 +18,8 @@ func GetConfig() *Config {
 	cfg := &Config{}
 
 	var key string
-	flag.StringVar(&cfg.Address, "a", "localhost:8078", "Gophermart service address and port")
-	flag.StringVar(&cfg.Accrual, "r", "localhost:8080", "Accrual service address and port")
+	flag.StringVar(&cfg.Address, "a", "localhost:8080", "Gophermart service address and port")
+	flag.StringVar(&cfg.Accrual, "r", "localhost:8078", "Accrual service address and port")
 	flag.StringVar(&cfg.DSN, "d", "''", "Postgresql DSN string")
 	flag.StringVar(&key, "k", "gophermart", "Secret key")
 	cfg.Key = []byte(key)
