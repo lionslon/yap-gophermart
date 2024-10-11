@@ -114,6 +114,7 @@ func run() (err error) {
 	case <-ctx.Done():
 	case err := <-componentsErrs:
 		log.Error(err)
+		log.Info(">>>>> CLOSE CONTEXT")
 		cancelCtx()
 	}
 
