@@ -1,21 +1,51 @@
-package database
+package db
 
 import (
 	"context"
 	"errors"
 	"fmt"
+
 	"github.com/jackc/pgx/v5"
-	"github.com/lionslon/yap-gophermart/models"
+
+	"github.com/lionslon/yap-gophermart/internal/models"
 )
 
-func (db *DB) GetCurrentBalance(ctx context.Context, userID string) (float64, error) {
+func (db *DB) GetBalance(ctx context.Context, userID string) (*models.UserBalance, error) {
 	tx, err := db.pool.Begin(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("unable to start GetCurrentBalance transaction err: %w", err)
+		return nil, fmt.Errorf("unable to start GetBalance transaction err: %w", err)
 	}
 
-	defer tx.Rollback(ctx)
+	defer func(tx pgx.Tx) {
+		if err := tx.Rollback(ctx); err != nil {
+			if !errors.Is(err, pgx.ErrTxClosed) {
+				db.log.Errorf("failed rollback transaction GetBalance err: %w", err)
+			}
+		}
+	}(tx)
 
+	c, err := db.getCurrentBalance(ctx, tx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("unable to get current balance err: %w", err)
+	}
+
+	w, err := db.getWithdrawals(ctx, tx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("unable to get withdrawals err: %w", err)
+	}
+
+	var b models.UserBalance
+	b.Current = c
+	b.Withdrawn = w
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("failed commit transaction GetBalance err: %w", err)
+	}
+
+	return &b, nil
+}
+
+func (db *DB) getCurrentBalance(ctx context.Context, tx pgx.Tx, userID string) (float64, error) {
 	sql := `
 	SELECT sum
 	FROM currentBalances
@@ -29,53 +59,10 @@ func (db *DB) GetCurrentBalance(ctx context.Context, userID string) (float64, er
 		}
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("failed commit transaction GetCurrentBalance err: %w", err)
-	}
-
 	return b, nil
 }
 
-func (db *DB) AddWithdrawn(ctx context.Context, userID string, orderNumber string, sum float64) error {
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("unable to start AddWithdrawn transaction err: %w", err)
-	}
-
-	defer tx.Commit(ctx)
-
-	sql := `
-	INSERT INTO withdrawals(date, userid, orderNumber, sum)
-	VALUES (CURRENT_TIMESTAMP, $1, $2, $3);`
-
-	if _, err := tx.Exec(ctx, sql, userID, orderNumber, sum); err != nil {
-		return fmt.Errorf("db AddWithdrawn err: %w", err)
-	}
-
-	if _, err := db.UpdateUserBalance(ctx, tx, userID, -sum); err != nil {
-		if errors.Is(err, models.ErrNotEnoughAccruals) {
-			if err := tx.Rollback(ctx); err != nil {
-				return fmt.Errorf("failed rollback transaction AddWithdrawn err: %w", err)
-			}
-		}
-		return fmt.Errorf("failed update user balance. AddWithdrawn err: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("failed commit transaction AddWithdrawn err: %w", err)
-	}
-
-	return nil
-}
-
-func (db *DB) GetWithdrawals(ctx context.Context, userID string) (float64, error) {
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("unable to start GetWithdrawals transaction err: %w", err)
-	}
-
-	defer tx.Rollback(ctx)
-
+func (db *DB) getWithdrawals(ctx context.Context, tx pgx.Tx, userID string) (float64, error) {
 	sql := `
 	SELECT coalesce(sum(sum),0)
 	FROM withdrawals
@@ -89,21 +76,43 @@ func (db *DB) GetWithdrawals(ctx context.Context, userID string) (float64, error
 		}
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("failed commit transaction GetWithdrawals err: %w", err)
-	}
-
 	return b, nil
 }
 
-func (db *DB) GetWithdrawalList(ctx context.Context, userID string) ([]*models.UserWithdrawalsHistory, error) {
+func (db *DB) AddWithdrawn(ctx context.Context, userID string, orderNumber string, sum float64) error {
 	tx, err := db.pool.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("unable to start GetWithdrawalList transaction err: %w", err)
+		return fmt.Errorf("unable to start AddWithdrawn transaction err: %w", err)
 	}
 
-	defer tx.Rollback(ctx)
+	defer func(tx pgx.Tx) {
+		if err := tx.Rollback(ctx); err != nil {
+			if !errors.Is(err, pgx.ErrTxClosed) {
+				db.log.Errorf("failed rollback transaction AddWithdrawn err: %w", err)
+			}
+		}
+	}(tx)
 
+	sql := `
+	INSERT INTO withdrawals(date, userid, orderNumber, sum)
+	VALUES (CURRENT_TIMESTAMP, $1, $2, $3);`
+
+	if _, err := tx.Exec(ctx, sql, userID, orderNumber, sum); err != nil {
+		return fmt.Errorf("db AddWithdrawn err: %w", err)
+	}
+
+	if _, err := db.UpdateUserBalance(ctx, tx, userID, -sum); err != nil {
+		return fmt.Errorf("failed update user balance. AddWithdrawn err: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed commit transaction AddWithdrawn err: %w", err)
+	}
+
+	return nil
+}
+
+func (db *DB) GetWithdrawalList(ctx context.Context, userID string) ([]*models.UserWithdrawalsHistory, error) {
 	sql := `
 	SELECT date, orderNumber, sum
 	FROM withdrawals
@@ -112,10 +121,11 @@ func (db *DB) GetWithdrawalList(ctx context.Context, userID string) ([]*models.U
 
 	var m []*models.UserWithdrawalsHistory
 
-	rows, err := tx.Query(ctx, sql, userID)
+	rows, err := db.pool.Query(ctx, sql, userID)
 	if err != nil {
 		return nil, fmt.Errorf("db GetWithdrawalList err: %w", err)
 	}
+	defer rows.Close()
 
 	for rows.Next() {
 		var ub models.UserWithdrawalsHistory
@@ -124,10 +134,6 @@ func (db *DB) GetWithdrawalList(ctx context.Context, userID string) ([]*models.U
 		}
 
 		m = append(m, &ub)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("failed commit transaction GetWithdrawalList err: %w", err)
 	}
 
 	return m, nil

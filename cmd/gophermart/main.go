@@ -4,22 +4,24 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/lionslon/yap-gophermart/internal/config"
-	"github.com/lionslon/yap-gophermart/internal/database"
-	"github.com/lionslon/yap-gophermart/internal/server"
-	"go.uber.org/zap"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
+
+	"github.com/lionslon/yap-gophermart/internal/config"
+	"github.com/lionslon/yap-gophermart/internal/db"
+	"github.com/lionslon/yap-gophermart/internal/hash"
+	"github.com/lionslon/yap-gophermart/internal/server"
 )
 
 const (
-	timeoutServerShutdown = time.Second * 5
-	timeoutShutdown       = time.Second * 10
+	timeoutServerShutdown = time.Second * 10
+	timeoutShutdown       = time.Second * 30
 )
 
 func main() {
@@ -32,39 +34,40 @@ func run() (err error) {
 	ctx, cancelCtx := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancelCtx()
 
-	wg := &sync.WaitGroup{}
-	defer func() {
-		wg.Wait()
-	}()
-
 	// Init logger
 	zapl, err := zap.NewProduction()
 	if err != nil {
 		return fmt.Errorf("failed to initialize logger err: %w ", err)
 	}
 	log := zapl.Sugar()
-
-	componentsErrs := make(chan error, 1)
-
-	wg.Add(1)
-	go func(errs chan<- error) {
-		defer log.Info("flush buffered log entries")
-		defer wg.Done()
-		<-ctx.Done()
-
+	defer func(log *zap.SugaredLogger) {
+		l := zap.L().Sugar()
 		if err := log.Sync(); err != nil {
-			if runtime.GOOS != "darwin" {
-				errs <- fmt.Errorf("cannot flush buffered log entries err: %w", err)
+			fs := "cannot flush buffered log entries err: %w"
+			if runtime.GOOS == "darwin" {
+				if !errors.Is(err, errors.New("bad file descriptor")) {
+					l.Errorf(fs, err)
+				}
+			} else {
+				l.Errorf(fs, err)
 			}
 		}
-	}(componentsErrs)
+		l.Info("flush buffered log entries")
+	}(log)
+
+	wg := &sync.WaitGroup{}
+	defer func() {
+		wg.Wait()
+	}()
+
+	componentsErrs := make(chan error, 1)
 
 	// Get config
 	cfg := config.GetConfig()
 	log.Infof("config %+v", cfg)
 
 	// Init DB
-	db, err := database.NewDB(ctx, cfg.DSN)
+	db, err := db.NewDB(ctx, cfg.DSN, log)
 	if err != nil {
 		return fmt.Errorf("failed to initialize DB err: %w", err)
 	}
@@ -79,19 +82,20 @@ func run() (err error) {
 	}()
 
 	// Init Handlers
-	h, err := server.NewHandlers(cfg.Key, db, log)
+	hashc, err := hash.NewHashController()
+	if err != nil {
+		return fmt.Errorf("failed to initialize hashcontroller err: %w", err)
+	}
+
+	h, err := server.NewHandlers(cfg.Key, db, log, cfg.TokenExp, hashc)
 	if err != nil {
 		return fmt.Errorf("failed to initialize handlers err: %w", err)
 	}
 
 	// Init and run Server
-	srv := server.InitServer(ctx, h, cfg, log, db)
+	srv := server.InitServer(ctx, h, *cfg, log, db)
 	go func(errs chan<- error) {
-		log.Info("started with params %s", cfg.Address)
-		if err := srv.HTTPServer.ListenAndServe(); err != nil {
-			if errors.Is(err, http.ErrServerClosed) {
-				return
-			}
+		if err := srv.ListenAndServe(); err != nil {
 			errs <- fmt.Errorf("listen and server has failed: %w", err)
 		}
 	}(componentsErrs)
@@ -105,7 +109,7 @@ func run() (err error) {
 
 		shutdownTimeoutCtx, cancelShutdownTimeoutCtx := context.WithTimeout(context.Background(), timeoutServerShutdown)
 		defer cancelShutdownTimeoutCtx()
-		if err := srv.HTTPServer.Shutdown(shutdownTimeoutCtx); err != nil {
+		if err := srv.Shutdown(shutdownTimeoutCtx); err != nil {
 			log.Errorf("an error occurred during server shutdown: %v", err)
 		}
 	}()
@@ -114,7 +118,6 @@ func run() (err error) {
 	case <-ctx.Done():
 	case err := <-componentsErrs:
 		log.Error(err)
-		log.Info(">>>>> CLOSE CONTEXT")
 		cancelCtx()
 	}
 
@@ -123,7 +126,7 @@ func run() (err error) {
 		defer cancelCtx()
 
 		<-ctx.Done()
-		log.Error("failed to gracefully shutdown the service")
+		log.Fatal("failed to gracefully shutdown the service")
 	}()
 
 	return nil

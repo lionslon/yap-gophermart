@@ -5,17 +5,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/lionslon/yap-gophermart/models"
-	"go.uber.org/zap"
 	"io"
 	"net/http"
+	"time"
+
+	"go.uber.org/zap"
+
+	"github.com/lionslon/yap-gophermart/internal/models"
 )
 
 type Storage interface {
 	AddUser(ctx context.Context, us *models.UserDTO) (*models.User, error)
 	GetUser(ctx context.Context, us *models.UserDTO) (*models.User, error)
-	GetCurrentBalance(ctx context.Context, userID string) (float64, error)
-	GetWithdrawals(ctx context.Context, userID string) (float64, error)
+	GetBalance(ctx context.Context, userID string) (*models.UserBalance, error)
 	GetWithdrawalList(ctx context.Context, userID string) ([]*models.UserWithdrawalsHistory, error)
 	AddWithdrawn(ctx context.Context, userID string, orderNumber string, sum float64) error
 	GetUploadedOrders(ctx context.Context, order *models.User) ([]*models.Order, error)
@@ -25,27 +27,50 @@ type Storage interface {
 	UpdateOrder(ctx context.Context, order *models.Order) error
 }
 
-const authHeaderName = "Authorization"
-const ContentTypeJSON = "application/json"
-
-type Handlers struct {
-	log       *zap.SugaredLogger
-	store     Storage
-	secretKey []byte
+type HashController interface {
+	HashPassword(password string) (string, error)
+	CheckPasswordHash(hash string, password string) bool
 }
 
-func NewHandlers(secretKey []byte, db Storage, log *zap.SugaredLogger) (*Handlers, error) {
+const authHeaderName = "Authorization"
+const contentTypeJSON = "application/json"
+const contentType = "Content-Type"
+
+var errUserUndefined = "user undefined"
+
+type Handlers struct {
+	store     Storage
+	hashc     HashController
+	log       *zap.SugaredLogger
+	secretKey []byte
+	tokenExp  time.Duration
+}
+
+func NewHandlers(secretKey []byte,
+	db Storage,
+	log *zap.SugaredLogger,
+	tokenExp time.Duration,
+	hashc HashController) (*Handlers, error) {
 	return &Handlers{
 		store:     db,
 		secretKey: secretKey,
 		log:       log,
+		tokenExp:  tokenExp,
+		hashc:     hashc,
 	}, nil
 }
 
 func (h *Handlers) Register(ctx context.Context, w http.ResponseWriter, r *http.Request) {
-	u, err := getLoginPsw(w, r)
+	u, err := h.getLoginPsw(w, r)
 	if err != nil {
 		h.log.Errorf("failed to read the Register request body err: %w ", err)
+		return
+	}
+
+	u.Password, err = h.hashc.HashPassword(u.Password)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		h.log.Errorf("failed to get the password hash err: %w", err)
 		return
 	}
 
@@ -60,7 +85,7 @@ func (h *Handlers) Register(ctx context.Context, w http.ResponseWriter, r *http.
 		return
 	}
 
-	token, err := NewJWTToken(h.secretKey, u.Login, u.Password)
+	token, err := NewJWTToken(h.secretKey, u.Login, h.tokenExp)
 	if err != nil {
 		h.log.Errorf("failed to build JWT token in the Register request err: %w ", err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -72,25 +97,24 @@ func (h *Handlers) Register(ctx context.Context, w http.ResponseWriter, r *http.
 }
 
 func (h *Handlers) Login(ctx context.Context, w http.ResponseWriter, r *http.Request) {
-	u, err := getLoginPsw(w, r)
+	u, err := h.getLoginPsw(w, r)
 	if err != nil {
-		h.log.Errorf("failed to read the Login request body err: %w ", err)
+		h.log.Errorf("failed to read the Login request err: %w ", err)
 		return
 	}
 
-	_, err = u.GetUser(ctx, h.store)
+	us, err := h.getUser(ctx, w, u)
 	if err != nil {
-		if errors.Is(err, models.ErrUnknownUser) {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-
-		h.log.Errorf("failed in the Register request err: %w ", err)
-		w.WriteHeader(http.StatusInternalServerError)
+		h.log.Errorf("failed to get user the Login request err: %w ", err)
 		return
 	}
 
-	token, err := NewJWTToken(h.secretKey, u.Login, u.Password)
+	if !h.hashc.CheckPasswordHash(us.PasswordHash, u.Password) {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
+	token, err := NewJWTToken(h.secretKey, u.Login, h.tokenExp)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -101,10 +125,10 @@ func (h *Handlers) Login(ctx context.Context, w http.ResponseWriter, r *http.Req
 }
 
 func (h *Handlers) AddOrder(ctx context.Context, w http.ResponseWriter, r *http.Request) {
-	u, err := h.GetUserFromJWTToken(w, r)
-	if err != nil {
+	u, ok := userFromContext(ctx)
+	if !ok {
 		w.WriteHeader(http.StatusBadRequest)
-		h.log.Errorf("failed to get user from JWT in the AddOrder request err: %w ", err)
+		h.log.Errorf(errUserUndefined)
 		return
 	}
 
@@ -152,10 +176,10 @@ func (h *Handlers) AddOrder(ctx context.Context, w http.ResponseWriter, r *http.
 }
 
 func (h *Handlers) GetOrders(ctx context.Context, w http.ResponseWriter, r *http.Request) {
-	u, err := h.GetUserFromJWTToken(w, r)
-	if err != nil {
+	u, ok := userFromContext(ctx)
+	if !ok {
 		w.WriteHeader(http.StatusBadRequest)
-		h.log.Errorf("failed to get user from JWT in the GetOrders request err: %w ", err)
+		h.log.Errorf(errUserUndefined)
 		return
 	}
 
@@ -173,7 +197,7 @@ func (h *Handlers) GetOrders(ctx context.Context, w http.ResponseWriter, r *http
 		return
 	}
 
-	w.Header().Set("Content-Type", ContentTypeJSON)
+	w.Header().Set(contentType, contentTypeJSON)
 
 	if _, err = w.Write(b); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -183,43 +207,28 @@ func (h *Handlers) GetOrders(ctx context.Context, w http.ResponseWriter, r *http
 }
 
 func (h *Handlers) GetBalance(ctx context.Context, w http.ResponseWriter, r *http.Request) {
-	u, err := h.GetUserFromJWTToken(w, r)
-	if err != nil {
+	u, ok := userFromContext(ctx)
+	if !ok {
 		w.WriteHeader(http.StatusBadRequest)
-		h.log.Errorf("failed to get user from JWT in the GetBalance request err: %w ", err)
+		h.log.Errorf(errUserUndefined)
 		return
 	}
 
-	c, err := u.GetUserBalance(ctx, h.store)
+	bl, err := u.GetBalance(ctx, h.store)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		h.log.Errorf("failed to get user current balance in the GetBalance request err: %w ", err)
 		return
 	}
 
-	wn, err := u.GetWithdrawals(ctx, h.store)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		h.log.Errorf("failed to get user withdrawals in the GetBalance request err: %w ", err)
-		return
-	}
-
-	resp := struct {
-		Current   float64 `json:"current"`
-		Withdrawn float64 `json:"withdrawn"`
-	}{
-		Current:   c,
-		Withdrawn: wn,
-	}
-
-	b, err := json.Marshal(&resp)
+	b, err := json.Marshal(&bl)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		h.log.Errorf("GetBalance marshal to json err: %w", err)
 		return
 	}
 
-	w.Header().Set("Content-Type", ContentTypeJSON)
+	w.Header().Set(contentType, contentTypeJSON)
 
 	if _, err = w.Write(b); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -229,10 +238,10 @@ func (h *Handlers) GetBalance(ctx context.Context, w http.ResponseWriter, r *htt
 }
 
 func (h *Handlers) AddBalanceWithdrawn(ctx context.Context, w http.ResponseWriter, r *http.Request) {
-	u, err := h.GetUserFromJWTToken(w, r)
-	if err != nil {
+	u, ok := userFromContext(ctx)
+	if !ok {
 		w.WriteHeader(http.StatusBadRequest)
-		h.log.Errorf("failed to get user from JWT in the AddBalanceWithdrawn request err: %w ", err)
+		h.log.Errorf(errUserUndefined)
 		return
 	}
 
@@ -255,6 +264,10 @@ func (h *Handlers) AddBalanceWithdrawn(ctx context.Context, w http.ResponseWrite
 	}
 
 	if err := u.AddWithdrawn(ctx, h.store, req.Order, req.Sum); err != nil {
+		if errors.Is(err, models.ErrNotEnoughAccruals) {
+			w.WriteHeader(http.StatusPaymentRequired)
+			return
+		}
 		w.WriteHeader(http.StatusBadRequest)
 		h.log.Errorf("failed to add withdrawal err: %w", err)
 		return
@@ -262,10 +275,10 @@ func (h *Handlers) AddBalanceWithdrawn(ctx context.Context, w http.ResponseWrite
 }
 
 func (h *Handlers) GetBalanceMovementHistory(ctx context.Context, w http.ResponseWriter, r *http.Request) {
-	u, err := h.GetUserFromJWTToken(w, r)
-	if err != nil {
+	u, ok := userFromContext(ctx)
+	if !ok {
 		w.WriteHeader(http.StatusBadRequest)
-		h.log.Errorf("failed to get user from JWT in the GetBalanceMovementHistory request err: %w ", err)
+		h.log.Errorf(errUserUndefined)
 		return
 	}
 
@@ -288,7 +301,7 @@ func (h *Handlers) GetBalanceMovementHistory(ctx context.Context, w http.Respons
 		return
 	}
 
-	w.Header().Set("Content-Type", ContentTypeJSON)
+	w.Header().Set(contentType, contentTypeJSON)
 
 	if _, err = w.Write(b); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -297,26 +310,39 @@ func (h *Handlers) GetBalanceMovementHistory(ctx context.Context, w http.Respons
 	}
 }
 
-func getLoginPsw(w http.ResponseWriter, r *http.Request) (*models.UserDTO, error) {
+func (h *Handlers) getLoginPsw(w http.ResponseWriter, r *http.Request) (*models.UserDTO, error) {
 	var u models.UserDTO
 
 	b, err := io.ReadAll(r.Body)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		return nil, fmt.Errorf("failed get login and pass from body err: %w", err)
+		return nil, fmt.Errorf("failed get login and password from body err: %w", err)
 	}
 
 	if err := json.Unmarshal(b, &u); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		return nil, fmt.Errorf("failed unmarhsal login and pass err: %w", err)
+		return nil, fmt.Errorf("failed unmarhsal login and password err: %w", err)
 	}
 
 	if u.Login == "" {
 		w.WriteHeader(http.StatusBadRequest)
-		return nil, errors.New("bad request")
+		return nil, errors.New("login is empty")
 	}
 
-	u.Password = models.EncodePassword(u.Password)
-
 	return &u, nil
+}
+
+func (h *Handlers) getUser(ctx context.Context, w http.ResponseWriter, u *models.UserDTO) (*models.User, error) {
+	us, err := u.GetUser(ctx, h.store)
+	if err != nil {
+		if errors.Is(err, models.ErrUnknowUser) {
+			w.WriteHeader(http.StatusUnauthorized)
+			return nil, fmt.Errorf("user is unauthorized err: %w", err)
+		}
+
+		w.WriteHeader(http.StatusInternalServerError)
+		return nil, fmt.Errorf("error getting user: %w ", err)
+	}
+
+	return us, nil
 }

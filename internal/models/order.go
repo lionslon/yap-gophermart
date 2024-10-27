@@ -3,25 +3,17 @@ package models
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 )
-
-// Заказ загружен в систему, но не попал в обработку;
-const OrderStatusNew = "NEW"
-
-// Вознаграждение за заказ рассчитывается;
-const OrderStatusProcessing = "PROCESSING"
-
-// Система расчёта вознаграждений отказала в расчёте;
-const OrderStatusInvalid = "INVALID"
-
-// Данные по заказу проверены и информация о расчёте успешно получена.
-const OrderStatusProcessed = "PROCESSED"
 
 type OrderDTO struct {
 	UserID string `json:"userId"`
 	Number string `json:"number"`
 }
+
+const OrderStatusNew = "NEW"
+const OrderStatusProcessing = "PROCESSING"
 
 type Order struct {
 	UploadedAt time.Time `json:"uploaded_at"`
@@ -40,18 +32,22 @@ type OrderStorage interface {
 	AddWithdrawn(ctx context.Context, userID string, orderNumber string, sum float64) error
 }
 
-type AccrualService interface {
-	GetOrderAccrual(ctx context.Context, order *Order) (*OrderAccrual, error)
-}
-
 var ErrOrderWasRegisteredEarlier = errors.New("the order was registered earlier")
 
 func (o *OrderDTO) AddOrder(ctx context.Context, db OrderStorage) (*Order, error) {
-	return db.AddOrder(ctx, o)
+	or, err := db.AddOrder(ctx, o)
+	if err != nil {
+		return nil, fmt.Errorf("add order was failed err: %w", err)
+	}
+	return or, nil
 }
 
 func (o *OrderDTO) GetOrder(ctx context.Context, db OrderStorage) (*Order, error) {
-	return db.GetOrder(ctx, o)
+	or, err := db.GetOrder(ctx, o)
+	if err != nil {
+		return nil, fmt.Errorf("get order was failed err: %w", err)
+	}
+	return or, nil
 }
 
 func (o *OrderDTO) NumberIsCorrect() bool {
@@ -74,9 +70,16 @@ func (o *OrderDTO) NumberIsCorrect() bool {
 }
 
 func (o *Order) Update(ctx context.Context, db OrderStorage) error {
-	return db.UpdateOrder(ctx, o)
+	if err := db.UpdateOrder(ctx, o); err != nil {
+		return fmt.Errorf("update order was failed err: %w", err)
+	}
+	return nil
 }
 
 func GetOrdersForAccrual(ctx context.Context, db OrderStorage) ([]*Order, error) {
-	return db.GetOrdersForAccrual(ctx)
+	ors, err := db.GetOrdersForAccrual(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get orders for accrual was failed err: %w", err)
+	}
+	return ors, nil
 }
