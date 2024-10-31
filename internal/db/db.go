@@ -14,9 +14,9 @@ type DB struct {
 }
 
 func NewDB(ctx context.Context, dsn string, log *zap.SugaredLogger) (*DB, error) {
-	//if err := runMigrations(dsn); err != nil {
-	//	return nil, fmt.Errorf("failed to run DB migrations: %w", err)
-	//}
+	if err := runMigrations(dsn); err != nil {
+		return nil, fmt.Errorf("failed to run DB migrations: %w", err)
+	}
 
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
