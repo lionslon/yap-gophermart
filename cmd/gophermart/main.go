@@ -55,11 +55,6 @@ func run() (err error) {
 		l.Info("flush buffered log entries")
 	}(log)
 
-	wg := &sync.WaitGroup{}
-	defer func() {
-		wg.Wait()
-	}()
-
 	componentsErrs := make(chan error, 1)
 
 	// Get config
@@ -72,12 +67,9 @@ func run() (err error) {
 		return fmt.Errorf("failed to initialize DB err: %w", err)
 	}
 
-	wg.Add(1)
-	go func() {
-		defer log.Info("closed DB")
-		defer wg.Done()
-		<-ctx.Done()
-
+	wg := &sync.WaitGroup{}
+	defer func() {
+		wg.Wait()
 		db.Close()
 	}()
 
@@ -93,7 +85,7 @@ func run() (err error) {
 	}
 
 	// Init and run Server
-	srv := server.InitServer(ctx, h, *cfg, log, db)
+	srv := server.InitServer(ctx, h, *cfg, log, db, wg)
 	go func(errs chan<- error) {
 		if err := srv.ListenAndServe(); err != nil {
 			errs <- fmt.Errorf("listen and server has failed: %w", err)

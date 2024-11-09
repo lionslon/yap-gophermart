@@ -77,6 +77,9 @@ func (db *DB) GetOrdersForAccrual(ctx context.Context) ([]*models.Order, error) 
 		}
 		ors = append(ors, &o)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
 	return ors, nil
 }
@@ -142,6 +145,9 @@ func (db *DB) GetUploadedOrders(ctx context.Context, u *models.User) ([]*models.
 			return nil, fmt.Errorf("db GetUploadedOrders row scan err: %w", err)
 		}
 		ors = append(ors, &o)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
 	return ors, nil

@@ -11,25 +11,13 @@ import (
 )
 
 func (db *DB) GetBalance(ctx context.Context, userID string) (*models.UserBalance, error) {
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("unable to start GetBalance transaction err: %w", err)
-	}
 
-	defer func(tx pgx.Tx) {
-		if err := tx.Rollback(ctx); err != nil {
-			if !errors.Is(err, pgx.ErrTxClosed) {
-				db.log.Errorf("failed rollback transaction GetBalance err: %w", err)
-			}
-		}
-	}(tx)
-
-	c, err := db.getCurrentBalance(ctx, tx, userID)
+	c, err := db.getCurrentBalance(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("unable to get current balance err: %w", err)
 	}
 
-	w, err := db.getWithdrawals(ctx, tx, userID)
+	w, err := db.getWithdrawals(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("unable to get withdrawals err: %w", err)
 	}
@@ -38,21 +26,17 @@ func (db *DB) GetBalance(ctx context.Context, userID string) (*models.UserBalanc
 	b.Current = c
 	b.Withdrawn = w
 
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("failed commit transaction GetBalance err: %w", err)
-	}
-
 	return &b, nil
 }
 
-func (db *DB) getCurrentBalance(ctx context.Context, tx pgx.Tx, userID string) (float64, error) {
+func (db *DB) getCurrentBalance(ctx context.Context, userID string) (float64, error) {
 	sql := `
 	SELECT sum
 	FROM currentBalances
 	WHERE userId = $1;`
 
 	var b float64
-	row := tx.QueryRow(ctx, sql, userID)
+	row := db.pool.QueryRow(ctx, sql, userID)
 	if err := row.Scan(&b); err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return 0, fmt.Errorf("db GetCurrentBalance err: %w", err)
@@ -62,14 +46,14 @@ func (db *DB) getCurrentBalance(ctx context.Context, tx pgx.Tx, userID string) (
 	return b, nil
 }
 
-func (db *DB) getWithdrawals(ctx context.Context, tx pgx.Tx, userID string) (float64, error) {
+func (db *DB) getWithdrawals(ctx context.Context, userID string) (float64, error) {
 	sql := `
 	SELECT coalesce(sum(sum),0)
 	FROM withdrawals
 	WHERE userId = $1;`
 
 	var b float64
-	row := tx.QueryRow(ctx, sql, userID)
+	row := db.pool.QueryRow(ctx, sql, userID)
 	if err := row.Scan(&b); err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return 0, fmt.Errorf("db GetWithdrawals err: %w", err)

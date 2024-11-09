@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -22,7 +23,14 @@ type Server struct {
 	accIntervalTimeout time.Duration
 }
 
-func InitServer(ctx context.Context, h *Handlers, cfg config.Config, log *zap.SugaredLogger, db Storage) *Server {
+func InitServer(
+	ctx context.Context,
+	h *Handlers,
+	cfg config.Config,
+	log *zap.SugaredLogger,
+	db Storage,
+	group *sync.WaitGroup,
+) *Server {
 	s := &Server{
 		httpServer: &http.Server{
 			Addr:    cfg.Address,
@@ -33,7 +41,7 @@ func InitServer(ctx context.Context, h *Handlers, cfg config.Config, log *zap.Su
 	}
 
 	a := adapters.NewAccrualClient(cfg, log)
-	go s.RunOrderAccruals(ctx, a, db)
+	go s.RunOrderAccruals(ctx, a, db, group)
 
 	return s
 }
@@ -98,8 +106,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-func (s *Server) RunOrderAccruals(ctx context.Context, a *adapters.Accrual, db Storage) {
-	ticker := time.NewTicker(s.accIntervalTimeout)
+func (s *Server) RunOrderAccruals(ctx context.Context, a *adapters.Accrual, db Storage, gr *sync.WaitGroup) {
 
 	errs := make(chan error, 1)
 	sleepyChan := make(chan int, 1)
@@ -107,7 +114,11 @@ func (s *Server) RunOrderAccruals(ctx context.Context, a *adapters.Accrual, db S
 	const defaultOrderChanSize = 10
 	orders := make(chan *models.Order, defaultOrderChanSize)
 
+	gr.Add(1)
 	go func(ctx context.Context, orders chan<- *models.Order, sleepyChan <-chan int, errs chan<- error) {
+		defer gr.Done()
+		ticker := time.NewTicker(s.accIntervalTimeout)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
@@ -131,10 +142,8 @@ func (s *Server) RunOrderAccruals(ctx context.Context, a *adapters.Accrual, db S
 
 	go func(ctx context.Context, orders <-chan *models.Order, sleepyChan chan<- int, errs chan<- error) {
 		for o := range orders {
-			select {
-			case <-ctx.Done():
+			if ctx.Err() != nil {
 				return
-			default:
 			}
 
 			oa, err := a.GetOrderAccrual(ctx, o)
