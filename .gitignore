@@ -14,6 +14,9 @@
 # Binaries
 cmd/gophermart/main
 cmd/gophermart/gophermart
+go_build_yap_gophermart
+gophermart
+main
 
 # Dependency directories (remove the comment below to include it)
 vendor/
